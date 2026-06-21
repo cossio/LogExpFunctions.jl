@@ -6,9 +6,8 @@ using LogExpFunctions: logmeanexp, logmeanexp!, logstdexp, logstdexp!, logvarexp
 # Count heap allocations of `f(x)` after warming it up
 allocations(f, x) = (f(x); @allocated f(x))
 
-# A single-use iterator that nonetheless advertises a length (so it exercises the
-# length-aware code path). Iterating it consumes it; a second traversal — or an
-# `isempty` probe — would skip elements. Used to check `logmeanexp`'s one-pass.
+# Single-use iterator that advertises a length: iterating consumes it, so a second pass
+# (or `isempty` probe) would skip elements. Exercises `logmeanexp`'s one-pass path.
 mutable struct DrainOnce{T}
     data::Vector{T}
     pos::Int
@@ -85,7 +84,7 @@ end
     for (Tin, Tout) in ((Float32, Float32), (Float64, Float64), (Int, Float64))
         X = Tin <: Integer ? rand(Tin(1):Tin(5), 5, 3, 2) : randn(Tin, 5, 3, 2)
 
-        # whole-array (`dims=:`) reductions return a scalar of type `Tout`
+        # whole-array (`dims=:`) reductions: scalar of type `Tout`
         @test typeof(@inferred(logmeanexp(X))) == Tout
         @test typeof(@inferred(logmeanexp(X; dims=:))) == Tout
         @test typeof(@inferred(logvarexp(X))) == Tout
@@ -93,19 +92,18 @@ end
         @test typeof(@inferred(logstdexp(X))) == Tout
         @test typeof(@inferred(logstdexp(X; dims=:))) == Tout
 
-        # `dims` reductions return an array whose eltype is `Tout`
+        # `dims` reductions: array with eltype `Tout`
         for dims in (1, 2, (1, 2))
             @test eltype(@inferred(logmeanexp(X; dims))) == Tout
             @test eltype(@inferred(logvarexp(X; dims))) == Tout
             @test eltype(@inferred(logstdexp(X; dims))) == Tout
         end
 
-        # single-pass iterator path (the edited `oftype(lse, lse - log(count))` line)
+        # single-pass iterator path
         @test typeof(@inferred(logmeanexp(Tuple(vec(X))))) == Tout
     end
 
-    # in-place reductions write into the caller's `out`, so they preserve its eltype —
-    # including the widening case where an integer input is reduced into a float `out`.
+    # in-place reductions preserve `out`'s eltype, incl. an Int input widened into a float `out`.
     Xi = rand(1:5, 6, 4)
     @test eltype(logmeanexp!(Matrix{Float64}(undef, 1, 4), Xi)) == Float64
     @test eltype(logvarexp!(Matrix{Float64}(undef, 1, 4), Xi)) == Float64
@@ -116,10 +114,10 @@ end
     @test eltype(logstdexp!(Matrix{Float32}(undef, 1, 4), Xf)) == Float32
 end
 
-# Regressions for correctness bugs found in review. Each block is one bug class.
+# Regression tests for review-found bugs, one block per bug class.
 @testset "edge-case regressions" begin
-    # Non-1-based axes (OffsetArrays): the `dims` variance/std must match the result on
-    # the equivalent 1-based array (a fused lazy reduction silently returned wrong values).
+    # Non-1-based axes (OffsetArrays) must match the 1-based result; a fused lazy
+    # reduction silently returned wrong values here.
     base = randn(4, 3)
     oa = OffsetArray(base, -1, -1)
     for dims in (1, 2, :)
@@ -132,16 +130,14 @@ end
         end
     end
 
-    # Abstract element type: the `dims` variance must still work (and match a concretely
-    # typed copy), not throw a MethodError.
+    # Abstract eltype: `dims` variance must work and match a concrete copy, not throw MethodError.
     Xabstract = Real[1.0 2.0 3.0; 4.0 5.0 6.0]
     Xconcrete = Float64.(Xabstract)
     @test logvarexp(Xabstract; dims=1) ≈ logvarexp(Xconcrete; dims=1)
     @test logvarexp(Xabstract) ≈ logvarexp(Xconcrete)
     @test logvarexp(Xabstract; dims=2) ≈ logvarexp(Xconcrete; dims=2)
 
-    # Empty reduction along the reduced dimension: `var` is NaN (not an error) for every
-    # `corrected`, matching `Statistics.var` and `logmeanexp`.
+    # Empty along the reduced dim: NaN, not an error (matching `Statistics.var`), for any `corrected`.
     Eredux = Matrix{Float64}(undef, 0, 3)
     @test all(isnan, logmeanexp(Eredux; dims=1))
     for corrected in (true, false)
@@ -149,20 +145,17 @@ end
         @test all(isnan, logstdexp(Eredux; dims=1, corrected))
     end
 
-    # Empty along a dimension that is NOT being reduced: the result is an empty array of
-    # the reduced shape (no DivideError).
+    # Empty along a non-reduced dim: empty array of the reduced shape, no DivideError.
     Eother = Matrix{Float64}(undef, 3, 0)
     @test size(logmeanexp(Eother; dims=1)) == (1, 0)
     @test size(logvarexp(Eother; dims=1)) == (1, 0)
     @test size(logstdexp(Eother; dims=1)) == (1, 0)
 
-    # Single-use iterator that reports a length: logmeanexp must traverse it exactly once
-    # (a length-aware path that re-consumed it would skip the first element).
+    # Single-use iterator with a length: must be traversed exactly once, not re-consumed.
     data = randn(7)
     @test logmeanexp(DrainOnce(data)) ≈ log(mean(exp, data))
 
-    # Complex arrays are rejected (no `<:Real` method) on every variance/std path, with or
-    # without `dims`; some error is thrown (the exact exception type is unspecified).
+    # Complex arrays are rejected (no `<:Real` method) on every variance/std path.
     C = ComplexF64[1 2; 3 4]
     @test_throws Exception logvarexp(C)
     @test_throws Exception logvarexp(C; dims=1)
@@ -194,10 +187,8 @@ end
 end
 
 @testset "allocations" begin
-    # `logmeanexp`'s `dims=:`, `dims`, and in-place paths build no O(n) temporary, so
-    # allocations don't grow with input size. (`logvarexp`/`logstdexp` do allocate an O(n)
-    # `2logsubexp.(X, logmean)` temporary — a deliberate simplicity tradeoff — so they
-    # aren't checked here.)
+    # `logmeanexp` builds no O(n) temporary, so allocations don't grow with input size.
+    # (`logvarexp`/`logstdexp` do allocate one, so they aren't checked here.)
     for T in (Float32, Float64)
         @test allocations(logmeanexp, randn(T, 10_000)) == allocations(logmeanexp, randn(T, 100))
         @test allocations(logmeanexp, randn(T, 10_000)) == 0
@@ -210,9 +201,8 @@ end
 end
 
 @testset "numerical robustness" begin
-    # Compare against high-precision (BigFloat) references on hard cases: tight clusters
-    # (var ≪ mean², where a raw second-moment formula cancels catastrophically) and
-    # values large/small enough that exp would over-/under-flow Float64.
+    # Compare against BigFloat references on hard cases: tight clusters (var ≪ mean², where
+    # a naive second-moment formula cancels) and values where exp over-/under-flows Float64.
     setprecision(BigFloat, 256) do
         refmean(x) = Float64(log(mean(exp.(big.(x)))))
         refvar(x; corrected=true) = Float64(log(var(exp.(big.(x)); corrected)))
@@ -226,8 +216,7 @@ end
             [0.0, 1e-6],
         )
         for x in cases
-            # atol covers near-zero results (e.g. logmeanexp([0, 1e-6]) ≈ 5e-7), where
-            # an inherent cancellation makes the relative error meaningless
+            # atol covers near-zero results, where relative error is meaningless
             @test logmeanexp(x) ≈ refmean(x) rtol = 1e-9 atol = 1e-10
             for corrected in (true, false)
                 @test logvarexp(x; corrected) ≈ refvar(x; corrected) rtol = 1e-8 atol = 1e-9
