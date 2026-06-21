@@ -25,12 +25,12 @@ function logmeanexp(X)
         count += 1
     end
     lse = _logsumexp_onepass_result(acc)
-    return lse - log(oftype(lse, count))
+    return oftype(lse, lse - log(count))
 end
 logmeanexp(X::AbstractArray{<:Number}; dims=:) = _logmeanexp(X, dims)
 function _logmeanexp(X::AbstractArray{<:Number}, ::Colon)
     out = logsumexp(X)
-    return out - oftype(out, log(length(X)))
+    return oftype(out, out - log(length(X)))
 end
 function _logmeanexp(X::AbstractArray{<:Number}, dims)
     out = similar(X, float(eltype(X)), Base.reduced_indices(axes(X), dims))
@@ -63,7 +63,7 @@ See also [`logvarexp!`](@ref).
 logvarexp(X::AbstractArray{<:Real}; dims=:, corrected::Bool=true, logmean=logmeanexp(X; dims)) = _logvarexp(X, dims, corrected, logmean)
 function _logvarexp(X::AbstractArray{<:Real}, ::Colon, corrected::Bool, logmean)
     out = logsumexp(2 .* logsubexp.(X, logmean))
-    return out - oftype(out, log(max(0, length(X) - corrected)))
+    return oftype(out, out - log(max(0, length(X) - corrected)))
 end
 function _logvarexp(X::AbstractArray{<:Real}, dims, corrected::Bool, logmean)
     out = logsumexp(2 .* logsubexp.(X, logmean); dims)

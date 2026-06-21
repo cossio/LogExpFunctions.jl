@@ -82,6 +82,42 @@ end
     @test isnan(logstdexp(Xsingleton; dims=:, corrected=true))
 end
 
+@testset "return types" begin
+    # The result element type must follow `float(eltype(input))`
+    for (Tin, Tout) in ((Float32, Float32), (Float64, Float64), (Int, Float64))
+        X = Tin <: Integer ? rand(Tin(1):Tin(5), 5, 3, 2) : randn(Tin, 5, 3, 2)
+
+        # whole-array (`dims=:`) reductions return a scalar of type `Tout`
+        @test typeof(@inferred(logmeanexp(X))) == Tout
+        @test typeof(@inferred(logmeanexp(X; dims=:))) == Tout
+        @test typeof(@inferred(logvarexp(X))) == Tout
+        @test typeof(@inferred(logvarexp(X; dims=:))) == Tout
+        @test typeof(@inferred(logstdexp(X))) == Tout
+        @test typeof(@inferred(logstdexp(X; dims=:))) == Tout
+
+        # `dims` reductions return an array whose eltype is `Tout`
+        for dims in (1, 2, (1, 2))
+            @test eltype(@inferred(logmeanexp(X; dims))) == Tout
+            @test eltype(@inferred(logvarexp(X; dims))) == Tout
+            @test eltype(@inferred(logstdexp(X; dims))) == Tout
+        end
+
+        # single-pass iterator path (the edited `oftype(lse, lse - log(count))` line)
+        @test typeof(@inferred(logmeanexp(Tuple(vec(X))))) == Tout
+    end
+
+    # in-place reductions write into the caller's `out`, so they preserve its eltype —
+    # including the widening case where an integer input is reduced into a float `out`.
+    Xi = rand(1:5, 6, 4)
+    @test eltype(logmeanexp!(Matrix{Float64}(undef, 1, 4), Xi)) == Float64
+    @test eltype(logvarexp!(Matrix{Float64}(undef, 1, 4), Xi)) == Float64
+    @test eltype(logstdexp!(Matrix{Float64}(undef, 1, 4), Xi)) == Float64
+    Xf = randn(Float32, 6, 4)
+    @test eltype(logmeanexp!(Matrix{Float32}(undef, 1, 4), Xf)) == Float32
+    @test eltype(logvarexp!(Matrix{Float32}(undef, 1, 4), Xf)) == Float32
+    @test eltype(logstdexp!(Matrix{Float32}(undef, 1, 4), Xf)) == Float32
+end
+
 # Regressions for correctness bugs found in review. Each block is one bug class.
 @testset "edge-case regressions" begin
     # Non-1-based axes (OffsetArrays): the `dims` variance/std must match the result on
