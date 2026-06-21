@@ -3,14 +3,12 @@ using Statistics: mean, std, var
 using OffsetArrays: OffsetArray
 using LogExpFunctions: logmeanexp, logmeanexp!, logstdexp, logstdexp!, logvarexp, logvarexp!
 
-# Count heap allocations of `f(x)` after warming it up. `f` and `x` are passed as
-# arguments so that they are concretely typed inside this function (avoiding spurious
-# allocations from captured, boxed locals).
+# Count heap allocations of `f(x)` after warming it up
 allocations(f, x) = (f(x); @allocated f(x))
 
 # A single-use iterator that nonetheless advertises a length (so it exercises the
 # length-aware code path). Iterating it consumes it; a second traversal — or an
-# `isempty` probe — would skip elements. Used to check `logmeanexp`'s one-pass contract.
+# `isempty` probe — would skip elements. Used to check `logmeanexp`'s one-pass.
 mutable struct DrainOnce{T}
     data::Vector{T}
     pos::Int
