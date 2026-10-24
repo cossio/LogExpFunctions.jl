@@ -17,6 +17,7 @@ Random.seed!(1234)
 
 include("basicfuns.jl")
 include("chainrules.jl")
+include("chainrules_stability.jl")
 include("inverse.jl")
 include("with_logabsdet_jacobian.jl")
 

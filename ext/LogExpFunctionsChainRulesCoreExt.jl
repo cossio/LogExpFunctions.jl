@@ -3,8 +3,6 @@ module LogExpFunctionsChainRulesCoreExt
 using LogExpFunctions
 import ChainRulesCore
 
-import LogExpFunctions.LinearAlgebra
-
 function _Ω_∂_xlogx(x::Real)
     logx = log(x)
     y = x * logx
@@ -114,7 +112,11 @@ function ChainRulesCore.rrule(::typeof(xexpy), x::Real, y::Real)
     return Ω, xexpy_pullback
 end
 
-ChainRulesCore.@scalar_rule(logistic(x::Real), (Ω * (1 - Ω),))
+ChainRulesCore.@scalar_rule(
+    logistic(x::Real),
+    @setup(a = exp(-abs(float(x)))),
+    (a / (1 + a)^2,),
+)
 ChainRulesCore.@scalar_rule(logit(x::Real), (inv(x * (1 - x)),))
 ChainRulesCore.@scalar_rule(logcosh(x::Real), tanh(x))
 ChainRulesCore.@scalar_rule(logabssinh(x::Real), coth(x))
@@ -135,16 +137,20 @@ ChainRulesCore.@scalar_rule(
 
 function ChainRulesCore.frule((_, Δx), ::typeof(logsumexp), x::AbstractArray{<:Real}; dims=:)
     Ω = logsumexp(x; dims=dims)
-    ΔΩ = sum(exp.(x .- Ω) .* Δx; dims=dims)
+    weights = isempty(x) ? float(x) : softmax(float(x); dims=dims)
+    ΔΩ = sum(weights .* Δx; dims=dims)
     return Ω, ΔΩ
 end
 function ChainRulesCore.rrule(::typeof(logsumexp), x::AbstractArray{<:Real}; dims=:)
     Ω = logsumexp(x; dims=dims)
+    # Reconstructing weights as exp.(x .- Ω) loses the normalization when a
+    # large common offset rounds away the correction in logsumexp(x).
+    weights = isempty(x) ? float(x) : softmax(float(x); dims=dims)
     project_x = ChainRulesCore.ProjectTo(x)
     function logsumexp_pullback(Ω̄)
         x̄ = ChainRulesCore.InplaceableThunk(
-            Δ -> Δ .+= Ω̄ .* exp.(x .- Ω),
-            ChainRulesCore.@thunk(project_x(Ω̄ .* exp.(x .- Ω))),
+            Δ -> Δ .+= Ω̄ .* weights,
+            ChainRulesCore.@thunk(project_x(Ω̄ .* weights)),
         )
         return ChainRulesCore.NoTangent(), x̄
     end
@@ -153,14 +159,24 @@ end
 
 # no rules for mutating functions currently:
 # https://juliadiff.org/ChainRulesCore.jl/stable/writing_good_rules.html#Which-functions-need-rules?
+
+# At most one entry per slice has probability greater than 1/2. Center on
+# its tangent before taking the weighted sum (or on zero if there is none).
+# Otherwise, when that probability rounds to one, Δ - sum(Ω .* Δ) cancels
+# its derivative while leaving the other entries nonzero (softmax collapse).
+# Selecting the tangent by reduction also supports arrays with offset axes.
+# See https://arxiv.org/abs/2610.31642, Section 2.
+function _softmax_center(Ω, Δ, dims)
+    anchor = sum(ifelse.(Ω .> 1 / 2, Δ, zero(eltype(Δ))); dims=dims)
+    mean = sum(Ω .* (Δ .- anchor); dims=dims)
+    return anchor, mean
+end
+
 function ChainRulesCore.frule((_, Δx), ::typeof(softmax), x::AbstractArray{<:Real}; dims=:)
     Ω = softmax(x; dims=dims)
-    ΔΩ = if dims === (:)
-        Ω .* (Δx .- LinearAlgebra.dot(Ω, Δx))
-    else
-        ΩΔx = Ω .* Δx
-        ΩΔx .- Ω .* sum(ΩΔx; dims=dims)
-    end
+    Δx isa ChainRulesCore.AbstractZero && return Ω, Δx
+    anchor, mean = _softmax_center(Ω, Δx, dims)
+    ΔΩ = Ω .* (Δx .- anchor .- mean)
     return Ω, ΔΩ
 end
 function ChainRulesCore.rrule(::typeof(softmax), x::AbstractArray{<:Real}; dims=:)
@@ -168,18 +184,13 @@ function ChainRulesCore.rrule(::typeof(softmax), x::AbstractArray{<:Real}; dims=
     Ωcopy = copy(Ω)
     project_x = ChainRulesCore.ProjectTo(x)
     function softmax_pullback(Ω̄)
-        x̄ = if dims === (:)
-            ChainRulesCore.InplaceableThunk(
-                Δ -> Δ .+= Ωcopy .* (Ω̄ .- LinearAlgebra.dot(Ωcopy, Ω̄)),
-                ChainRulesCore.@thunk(project_x(Ωcopy .* (Ω̄ .- LinearAlgebra.dot(Ωcopy, Ω̄)))),
-            )
-        else
-            ΩcopyΩ̄  = Ωcopy .* Ω̄
-            ChainRulesCore.InplaceableThunk(
-                Δ -> Δ .+= ΩcopyΩ̄  .- Ωcopy .* sum(ΩcopyΩ̄; dims=dims),
-                ChainRulesCore.@thunk(project_x(ΩcopyΩ̄  .- Ωcopy .* sum(ΩcopyΩ̄; dims=dims))),
-            )
-        end
+        ΔΩ = ChainRulesCore.unthunk(Ω̄)
+        ΔΩ isa ChainRulesCore.AbstractZero && return ChainRulesCore.NoTangent(), ΔΩ
+        anchor, mean = _softmax_center(Ωcopy, ΔΩ, dims)
+        x̄ = ChainRulesCore.InplaceableThunk(
+            Δ -> Δ .+= Ωcopy .* (ΔΩ .- anchor .- mean),
+            ChainRulesCore.@thunk(project_x(Ωcopy .* (ΔΩ .- anchor .- mean))),
+        )
         return ChainRulesCore.NoTangent(), x̄
     end
     return Ω, softmax_pullback
